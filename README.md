@@ -21,7 +21,7 @@
 ### 安装
 
 ```bash
-wget -O mtg-install.sh https://raw.githubusercontent.com/你的用户名/你的仓库/main/mtg-install.sh
+wget -O mtg-install.sh https://raw.githubusercontent.com/Petersrsr/mtg-install/main/mtg-install.sh
 chmod +x mtg-install.sh
 bash mtg-install.sh
 ```
@@ -29,7 +29,7 @@ bash mtg-install.sh
 或直接运行：
 
 ```bash
-bash <(wget -O- https://raw.githubusercontent.com/你的用户名/你的仓库/main/mtg-install.sh)
+bash <(wget -O- https://raw.githubusercontent.com/Petersrsr/mtg-install/main/mtg-install.sh)
 ```
 
 ### 卸载
