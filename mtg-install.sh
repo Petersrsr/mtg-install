@@ -328,7 +328,9 @@ DOWNLOAD_URL="https://github.com/9seconds/mtg/releases/download/v${MTG_VERSION}/
 SHA256_URL="${DOWNLOAD_URL}.sha256"
 
 NEED_INSTALL=1
-if [ -x "$MTG_BIN" ] && "$MTG_BIN" --version 2>/dev/null | grep -q "v${MTG_VERSION}"; then
+# mtg --version 输出是 "2.2.8 (go1.x.x...)"，不带 v 前缀
+# 用 grep -E 匹配 "v?2.2.8" 容错
+if [ -x "$MTG_BIN" ] && "$MTG_BIN" --version 2>/dev/null | grep -qE "v?${MTG_VERSION}"; then
     log "mtg v$MTG_VERSION 已安装，跳过下载"
     NEED_INSTALL=0
 fi
