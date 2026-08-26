@@ -129,15 +129,16 @@ fi
 log "mtg 版本: v$MTG_VERSION"
 
 # ============================================================
-# [1/6] 公网 IP 检测 + 校验
+# [1/6] 公网 IP 检测（NAT 友好）
 # ============================================================
 echo ""
 log "[1/6] 检测公网 IP..."
 
+# 工具函数：验证 IPv4 格式
 is_valid_ipv4() {
     echo "$1" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || return 1
     for octet in $(echo "$1" | tr '.' ' '); do
-        # 注意: 强制十进制比较，避免 octet=0 被认作 false
+        # 强制十进制比较，避免 octet=0 被认作 false
         if [ "${octet:-999}" -gt 255 ] 2>/dev/null; then
             return 1
         fi
@@ -145,19 +146,88 @@ is_valid_ipv4() {
     return 0
 }
 
-PUBLIC_IP=""
-for url in "https://api.ipify.org" "https://ifconfig.me" "https://ip.sb" "https://icanhazip.com"; do
-    PUBLIC_IP=$(wget -qO- --timeout=5 "$url" 2>/dev/null | tr -d '[:space:]')
-    if is_valid_ipv4 "$PUBLIC_IP"; then
-        break
-    fi
-    PUBLIC_IP=""
-done
+# 工具函数：检测是否私网 IP
+is_private_ip() {
+    echo "$1" | grep -qE '^(10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.|127\.|169\.254\.)'
+}
 
+# 获取本机第一张网卡 IP（NAT 检测）
+get_host_ip() {
+    if command -v ip >/dev/null 2>&1; then
+        ip -4 addr show 2>/dev/null \
+            | awk '/inet / && !/127\.0\.0\.1/ {print $2}' \
+            | cut -d/ -f1 | head -1
+    fi
+}
+
+# 尝试从指定 URL 获取公网 IP
+# 用 timeout 命令强制总超时（防 busybox wget DNS 卡死）
+try_url() {
+    local url="$1"
+    local label="${2:-$url}"
+    local ip
+    printf "    %-28s ... " "$label"
+    ip=$(timeout 4 wget -qO- "$url" 2>/dev/null | tr -d '[:space:]' || true)
+    if is_valid_ipv4 "$ip"; then
+        echo "✓ $ip"
+        PUBLIC_IP="$ip"
+        return 0
+    fi
+    echo "✗"
+    return 1
+}
+
+# 1) NAT 环境检测：本机 IP 是私网 → 推荐手动输入
+HOST_IP=$(get_host_ip)
+NEED_MANUAL=0
+if [ -n "$HOST_IP" ] && is_private_ip "$HOST_IP"; then
+    warn "检测到 NAT 环境（本机 IP: $HOST_IP 是私网地址）"
+    echo "    自动检测只能拿到 NAT 网关的公网 IP，"
+    echo "    这与你的端口转发/内网穿透后的对外 IP 可能不同。"
+    echo "    NAT 环境强烈推荐手动输入。"
+    printf "    仍要自动检测? [y/N]: "
+    read -r auto_ans
+    case "${auto_ans:-n}" in
+        [yY]|[yY][eE][sS]) ;;
+        *) NEED_MANUAL=1 ;;
+    esac
+fi
+
+# 2) DNS preflight：先测 DNS 能不能用（避免后面 wget 卡 DNS）
+if [ "$NEED_MANUAL" != "1" ]; then
+    if ! timeout 3 nslookup github.com >/dev/null 2>&1; then
+        warn "DNS 解析测试失败（3s 超时）"
+        NEED_MANUAL=1
+    fi
+fi
+
+# 3) 自动检测：HTTP 优先（避开 TLS 握手慢），每源 4s 总超时
+PUBLIC_IP=""
+if [ "$NEED_MANUAL" != "1" ]; then
+    log "自动检测公网 IP（HTTP 优先，每源最多 4s）"
+    for entry in \
+        "http://api.ipify.org|api.ipify.org" \
+        "http://ifconfig.me/ip|ifconfig.me" \
+        "http://ip.sb|ip.sb" \
+        "http://icanhazip.com|icanhazip.com" \
+        "https://api.ipify.org|api.ipify.org (HTTPS)"; do
+        url="${entry%%|*}"
+        label="${entry##*|}"
+        try_url "$url" "$label" && break
+    done
+fi
+
+# 4) 手动输入：NAT 环境或自动检测失败
 if [ -z "$PUBLIC_IP" ]; then
-    warn "无法自动检测公网 IP"
+    echo ""
+    if [ "$NEED_MANUAL" = "1" ]; then
+        warn "请输入对外暴露的公网 IP"
+        echo "    提示: 这是 NAT 网关/路由器/穿透隧道的公网 IP，不是容器内 IP"
+    else
+        warn "自动检测失败，请手动输入公网 IP"
+    fi
     while true; do
-        printf "    请手动输入你的服务器公网 IP: "
+        printf "    公网 IP: "
         read -r PUBLIC_IP
         PUBLIC_IP=$(echo "${PUBLIC_IP:-}" | tr -d '[:space:]')
         if is_valid_ipv4 "$PUBLIC_IP"; then
