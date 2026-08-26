@@ -352,7 +352,9 @@ TMP_DIR="$(mktemp -d)"
 cleanup() { rm -rf "$TMP_TARBALL" "$TMP_DIR"; }
 trap cleanup EXIT
 
-DOWNLOAD_URL="https://github.com/Scratch-net/telego/releases/download/v${TELEGO_VERSION}/telego-${TELEGO_VERSION}-linux-${TELEGO_ARCH}.tar.gz"
+# 注意: GitHub release asset 名用下划线分隔，不是短横线
+#   实际: telego_0.5.2_linux_amd64.tar.gz
+DOWNLOAD_URL="https://github.com/Scratch-net/telego/releases/download/v${TELEGO_VERSION}/telego_${TELEGO_VERSION}_linux_${TELEGO_ARCH}.tar.gz"
 CHECKSUM_URL="https://github.com/Scratch-net/telego/releases/download/v${TELEGO_VERSION}/checksums.txt"
 
 NEED_INSTALL=1
