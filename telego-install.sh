@@ -356,7 +356,8 @@ DOWNLOAD_URL="https://github.com/Scratch-net/telego/releases/download/v${TELEGO_
 CHECKSUM_URL="https://github.com/Scratch-net/telego/releases/download/v${TELEGO_VERSION}/checksums.txt"
 
 NEED_INSTALL=1
-if [ -x "$TELEGO_BIN" ] && "$TELEGO_BIN" version 2>/dev/null | grep -qE "v?${TELEGO_VERSION}"; then
+# telEgo 的 zerolog 输出到 stderr，必须 2>&1 合并
+if [ -x "$TELEGO_BIN" ] && "$TELEGO_BIN" version 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -q "${TELEGO_VERSION}"; then
     log "telEgo v$TELEGO_VERSION 已安装，跳过下载"
     NEED_INSTALL=0
 fi
@@ -408,7 +409,7 @@ if [ "$NEED_INSTALL" = "1" ]; then
         exit 1
     fi
     install -m 0755 "$EXTRACTED" "$TELEGO_BIN"
-    log "telEgo 安装完成: $("$TELEGO_BIN" version 2>/dev/null | head -1 || echo unknown)"
+    log "telEgo 安装完成: $("$TELEGO_BIN" version 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | head -1 || echo unknown)"
 fi
 
 # ============================================================
@@ -446,17 +447,27 @@ while [ "$i" -le "$N_SECRETS" ]; do
 
     log "[$i/$N_SECRETS] 生成 secret for $USER_NAME"
 
-    # telEgo generate 输出格式:
-    #   secret=0123...cdef
-    #   ee_link=tg://proxy?server=...&port=...&secret=ee...
-    #   dd_link=tg://proxy?server=...&port=...&secret=dd...
-    # 我们捕获 secret（16 字节 hex），然后自己拼 ee / dd 链接
-    GEN_OUTPUT=$(timeout 10 "$TELEGO_BIN" generate "$MASK_HOST" 2>&1 || true)
-    SECRET_HEX=$(echo "$GEN_OUTPUT" | sed -n 's/^secret=\([0-9a-f]\{32\}\).*/\1/p' | head -1)
+    # telEgo generate 输出格式 (zerolog + ANSI 颜色):
+    #   2026-... INF generated secret (use ee for FakeTLS, dd for raw)
+    #     dd_link=tg://...secret=ddXXX...
+    #     ee_link=tg://...secret=eeXXX+host_hex
+    #     secret=XXX                       <- 末尾的纯 32 字符 hex secret
+    #
+    # 提取步骤:
+    #   1. 去 ANSI 颜色 (telEgo 默认带颜色)
+    #   2. grep -oE 抓所有 "secret=32字符hex"
+    #   3. tail -1 取最后一个 (即纯 secret=XXX)
+    GEN_OUTPUT=$(timeout 10 "$TELEGO_BIN" generate "$MASK_HOST" 2>&1 | sed 's/\x1b\[[0-9;]*m//g' || true)
+    SECRET_HEX=$(echo "$GEN_OUTPUT" | grep -oE 'secret=[0-9a-f]{32}\b' | tail -1 | sed 's/secret=//')
 
     if [ -z "$SECRET_HEX" ] || [ "${#SECRET_HEX}" != "32" ]; then
-        err "生成 secret 失败"
-        echo "$GEN_OUTPUT" | head -5
+        err "生成 secret 失败（长度 ${#SECRET_HEX:-0}）"
+        echo "telEgo generate 输出:"
+        echo "$GEN_OUTPUT" | head -10
+        echo ""
+        echo "可能原因:"
+        echo "  1. telEgo 二进制损坏 - 重新下载"
+        echo "  2. mask-host 格式不正确 - 必须是小写域名"
         exit 1
     fi
     log "    secret: $SECRET_HEX"
