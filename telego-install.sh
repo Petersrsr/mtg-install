@@ -56,6 +56,7 @@ if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
 
 选项:
   (无)              安装 telEgo（交互输入配置）
+  --force           强制重装（覆盖已存在的配置）
   --uninstall, -u   卸载 telEgo（保留 /etc/telego/secrets.bak 备份）
   --help, -h        显示此帮助
 
@@ -65,6 +66,11 @@ if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
 上游项目: https://github.com/Scratch-net/telego
 EOF
     exit 0
+fi
+
+FORCE=0
+if [ "${1:-}" = "--force" ]; then
+    FORCE=1
 fi
 
 # ============================================================
@@ -105,6 +111,18 @@ apk add --no-cache wget tar curl ca-certificates openssl >/dev/null 2>&1 || {
     err "依赖安装失败，请检查 apk 源配置"
     exit 1
 }
+
+# 重复安装检测
+if [ -f /etc/telego/telego.toml ] && [ "$FORCE" != "1" ]; then
+    warn "检测到已有 telEgo 配置 (/etc/telego/telego.toml)"
+    echo "    重新安装会覆盖现有配置和 secret！"
+    printf "    继续? [y/N] (--force 可跳过确认): "
+    read -r cont
+    case "${cont:-n}" in
+        [yY]|[yY][eE][sS]) ;;
+        *) err "已取消"; exit 1 ;;
+    esac
+fi
 
 # ============================================================
 # 架构检测
@@ -183,6 +201,11 @@ HOST_IP=$(get_host_ip)
 NEED_MANUAL=0
 if [ -n "$HOST_IP" ] && is_private_ip "$HOST_IP"; then
     warn "检测到 NAT 环境（本机 IP: $HOST_IP 是私网地址）"
+    echo "    ┌─────────────────────────────────────────────────────────┐"
+    echo "    │ 重要: 你需要在本机外的 NAT 网关/路由器/LXC宿主 上配置    │"
+    echo "    │       端口转发，把 公网IP:端口 → 容器IP:端口。           │"
+    echo "    │       例: 公网 103.x.x.x:54712 → 本机 ${HOST_IP}:54712        │"
+    echo "    └─────────────────────────────────────────────────────────┘"
     echo "    自动检测只能拿到 NAT 网关的公网 IP，"
     echo "    这与你的端口转发/内网穿透后的对外 IP 可能不同。"
     echo "    NAT 环境强烈推荐手动输入。"
@@ -271,6 +294,24 @@ while true; do
 done
 log "mask-host: $MASK_HOST"
 
+# mask-host 连通性预检（避免装完才失败）
+# 注意: 用 TCP 直连测试 (busybox wget --spider 对 https 支持差，会误报)
+echo ""
+log "预检 mask-host 连通性 (${MASK_HOST}:443)..."
+if timeout 5 bash -c "</dev/tcp/${MASK_HOST}/443" 2>/dev/null; then
+    log "mask-host 连通性 OK"
+else
+    warn "mask-host ${MASK_HOST}:443 TCP 连接失败"
+    echo "    telEgo 启动时需要连接该域名拉取真实 TLS 证书，"
+    echo "    若此域名不可达，部署后会启动失败。"
+    printf "    仍要继续? [y/N]: "
+    read -r cont
+    case "${cont:-n}" in
+        [yY]|[yY][eE][sS]) ;;
+        *) err "已取消，请换一个可达的 mask-host"; exit 1 ;;
+    esac
+fi
+
 # ============================================================
 # Secret 数量（单实例多用户）
 # ============================================================
@@ -340,7 +381,7 @@ esac
 log "监听: $BIND_IP ($IP_MODE)"
 
 # ============================================================
-# [4/6] 下载 telEgo + SHA256 校验
+# [4/6] 下载 telEgo + SHA256 校验（多源 fallback）
 # ============================================================
 echo ""
 log "[4/6] 下载 telEgo v$TELEGO_VERSION (linux-$TELEGO_ARCH)..."
@@ -354,8 +395,7 @@ trap cleanup EXIT
 
 # 注意: GitHub release asset 名用下划线分隔，不是短横线
 #   实际: telego_0.5.2_linux_amd64.tar.gz
-DOWNLOAD_URL="https://github.com/Scratch-net/telego/releases/download/v${TELEGO_VERSION}/telego_${TELEGO_VERSION}_linux_${TELEGO_ARCH}.tar.gz"
-CHECKSUM_URL="https://github.com/Scratch-net/telego/releases/download/v${TELEGO_VERSION}/checksums.txt"
+ASSET_NAME="telego_${TELEGO_VERSION}_linux_${TELEGO_ARCH}.tar.gz"
 
 NEED_INSTALL=1
 # telEgo 的 zerolog 输出到 stderr，必须 2>&1 合并
@@ -365,24 +405,44 @@ if [ -x "$TELEGO_BIN" ] && "$TELEGO_BIN" version 2>&1 | sed 's/\x1b\[[0-9;]*m//g
 fi
 
 if [ "$NEED_INSTALL" = "1" ]; then
+    # 多源下载: GitHub 直连 → jsDelivr CDN → 最后兜底
+    # 注意: raw.githubusercontent.com 有 5 分钟 CDN 缓存,
+    #       但 release 二进制 (github.com/.../releases/download/) 不走那个缓存
+    DOWNLOAD_URLS="\
+https://github.com/Scratch-net/telego/releases/download/v${TELEGO_VERSION}/${ASSET_NAME}
+https://cdn.jsdelivr.net/gh/Scratch-net/telego@v${TELEGO_VERSION}/${ASSET_NAME}
+https://github.com/Scratch-net/telego/releases/download/v${TELEGO_VERSION}/${ASSET_NAME}"
+
     log "下载 telEgo 二进制（v$TELEGO_VERSION, $TELEGO_ARCH, 约 6MB）"
-    log "URL: $DOWNLOAD_URL"
     log "NAT 网络下载可能较慢，最多 120s 超时，请耐心等待..."
-    if ! timeout 120 curl -fL \
-        --connect-timeout 10 --max-time 120 \
-        -o "$TMP_TARBALL" \
-        -w "    下载完成：%{speed_download} B/s, %{size_download} bytes, 用时 %{time_total}s\n" \
-        "$DOWNLOAD_URL" 2>&1; then
-        err "下载失败（120s 超时或网络错误）"
-        err "请手动验证下载: curl -L $DOWNLOAD_URL"
+
+    DL_OK=0
+    for url in $DOWNLOAD_URLS; do
+        log "尝试: $url"
+        if timeout 60 curl -fL --connect-timeout 10 --max-time 60 \
+            -o "$TMP_TARBALL" "$url" 2>/dev/null; then
+            if [ -s "$TMP_TARBALL" ]; then
+                log "下载成功: $(wc -c < "$TMP_TARBALL") bytes"
+                DL_OK=1
+                break
+            fi
+        fi
+        warn "下载失败，尝试下一个源..."
+    done
+
+    if [ "$DL_OK" != "1" ]; then
+        err "所有下载源都失败"
+        err "请手动验证:"
+        err "  curl -L https://github.com/Scratch-net/telego/releases/download/v${TELEGO_VERSION}/${ASSET_NAME}"
         err "查看版本: https://github.com/Scratch-net/telego/releases"
         exit 1
     fi
 
     # SHA256 校验（checksums.txt 含所有架构，grep 提取对应行）
-    # 注意: GitHub URL 用 "-" 分隔，checksums.txt 用 "_" 分隔
-    CHECKSUM_FILE=$(echo "telego-${TELEGO_VERSION}-linux-${TELEGO_ARCH}.tar.gz" | tr '-' '_')
-    EXPECTED_SHA=$(timeout 10 wget -qO- "$CHECKSUM_URL" 2>/dev/null \
+    # 注意: checksums.txt 文件名用 "_" 分隔
+    CHECKSUM_FILE=$(echo "$ASSET_NAME")
+    EXPECTED_SHA=$(timeout 10 wget -qO- \
+        "https://github.com/Scratch-net/telego/releases/download/v${TELEGO_VERSION}/checksums.txt" 2>/dev/null \
         | awk -v file="$CHECKSUM_FILE" '$2 == file {print $1}' | head -1 || true)
     if [ -n "$EXPECTED_SHA" ]; then
         ACTUAL_SHA=$(sha256sum "$TMP_TARBALL" | awk '{print $1}')
@@ -405,9 +465,17 @@ if [ "$NEED_INSTALL" = "1" ]; then
 
     mkdir -p "$TELEGO_DATA"
     tar -xzf "$TMP_TARBALL" -C "$TMP_DIR"
-    EXTRACTED="$TMP_DIR/telego"
-    if [ ! -x "$EXTRACTED" ]; then
-        err "解压后未找到二进制文件: $EXTRACTED"
+    # 解压后二进制可能在根目录或子目录，自动查找
+    EXTRACTED=""
+    for candidate in "$TMP_DIR/telego" "$TMP_DIR"/*/telego; do
+        if [ -x "$candidate" ]; then
+            EXTRACTED="$candidate"
+            break
+        fi
+    done
+    if [ -z "$EXTRACTED" ]; then
+        err "解压后未找到二进制文件"
+        ls -la "$TMP_DIR"
         exit 1
     fi
     install -m 0755 "$EXTRACTED" "$TELEGO_BIN"
@@ -425,7 +493,7 @@ mkdir -p /etc/telego
 # 备份所有 secret（卸载保留）
 : > /etc/telego/secrets.bak  # 清空（用 : no-op 避免 SC2188）
 
-# 收集所有 TG 链接（ee + dd）
+# 收集所有 TG 链接
 TG_URLS_EE=""
 TG_URLS_DD=""
 
@@ -443,22 +511,23 @@ while [ "$i" -le "$N_SECRETS" ]; do
     # 简化校验：字母数字下划线短横
     if ! echo "$USER_NAME" | grep -qE '^[a-z0-9_-]{1,32}$'; then
         err "无效的名字（只允许字母数字下划线短横线，1-32 字符）"
-        i=$((i + 1))
+        # 注意: 这里不 i++，让用户重新输入
         continue
     fi
 
     log "[$i/$N_SECRETS] 生成 secret for $USER_NAME"
 
-    # telEgo generate 输出格式 (zerolog + ANSI 颜色):
+    # telEgo generate 输出格式 (zerolog + ANSI 颜色 + stderr):
     #   2026-... INF generated secret (use ee for FakeTLS, dd for raw)
     #     dd_link=tg://...secret=ddXXX...
     #     ee_link=tg://...secret=eeXXX+host_hex
     #     secret=XXX                       <- 末尾的纯 32 字符 hex secret
     #
     # 提取步骤:
-    #   1. 去 ANSI 颜色 (telEgo 默认带颜色)
-    #   2. grep -oE 抓所有 "secret=32字符hex"
-    #   3. tail -1 取最后一个 (即纯 secret=XXX)
+    #   1. 2>&1 合并 stderr (zerolog 默认输出到 stderr)
+    #   2. sed 去 ANSI 颜色
+    #   3. grep -oE 抓所有 "secret=32字符hex"
+    #   4. tail -1 取最后一个 (即纯 secret=XXX)
     GEN_OUTPUT=$(timeout 10 "$TELEGO_BIN" generate "$MASK_HOST" 2>&1 | sed 's/\x1b\[[0-9;]*m//g' || true)
     SECRET_HEX=$(echo "$GEN_OUTPUT" | grep -oE 'secret=[0-9a-f]{32}\b' | tail -1 | sed 's/secret=//')
 
@@ -493,7 +562,7 @@ done
 chmod 600 /etc/telego/secrets.bak
 
 # ============================================================
-# 写入 telEgo 配置（重新生成 toml，因为上面循环不知道所有 secret）
+# 写入 telEgo 配置
 # ============================================================
 log "写入配置文件 /etc/telego/telego.toml..."
 
@@ -624,11 +693,29 @@ else
     rc-service telego start >/dev/null 2>&1 || true
     log "服务已启动"
 fi
-sleep 1
+sleep 2
 
-# 状态校验
+# ============================================================
+# 深度验证（不只是 rc-service status，还要检查端口监听）
+# ============================================================
+STARTED=0
 if rc-service telego status 2>&1 | grep -q started; then
-    log "服务状态: 运行中 OK"
+    STARTED=1
+fi
+
+PORT_LISTENING=0
+if [ "$BIND_IP" = "0.0.0.0" ]; then
+    if ss -ltn 2>/dev/null | grep -q ":$PORT " || netstat -ltn 2>/dev/null | grep -q ":$PORT "; then
+        PORT_LISTENING=1
+    fi
+else
+    if ss -ltn 2>/dev/null | grep -qE "\[::\]:$PORT |:${PORT} " || netstat -ltn 2>/dev/null | grep -q ":$PORT "; then
+        PORT_LISTENING=1
+    fi
+fi
+
+if [ "$STARTED" = "1" ] && [ "$PORT_LISTENING" = "1" ]; then
+    log "服务状态: 运行中 OK (端口 $PORT 已监听)"
 else
     err "服务状态: 启动失败"
     echo ""
@@ -703,6 +790,11 @@ cat <<EOF
   💡 热重载配置:
      kill -HUP \$(pidof telego)        # 部分配置（log-level, idle-timeout）无需重启
      # 或编辑 /etc/telego/telego.toml 后 telego 自动检测（fsnotify）
+
+  ⚠️ 如果 Telegram 连不上，检查:
+     1. 公网 ${PUBLIC_IP}:${PORT} 是否可达 (telnet/nc 测试)
+     2. NAT 网关/宿主端口转发是否正确
+     3. 伪装域名 ${MASK_HOST} 是否被墙（换一个试试）
 
 ==========================================
 EOF
