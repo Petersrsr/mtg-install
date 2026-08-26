@@ -106,6 +106,59 @@ bash telego-install.sh --uninstall   # 或 mtg-install.sh --uninstall
 
 ---
 
+## 📖 手动部署指南（重装系统后照着做）
+
+### 前提
+
+- Alpine Linux 3.18+（LXC/VM/物理机均可）
+- root 权限
+- 能访问外网（telEgo 启动时要连 mask-host:443 拉证书）
+- 已配置好端口转发（NAT 环境）
+
+### 步骤
+
+1. **下载脚本**（推荐 jsDelivr，无 CDN 缓存问题）：
+
+```bash
+wget -O telego-install.sh https://cdn.jsdelivr.net/gh/Petersrsr/mtg-install@main/telego-install.sh
+chmod +x telego-install.sh
+```
+
+2. **运行**：
+
+```bash
+bash telego-install.sh
+```
+
+3. **交互输入**（按提示走）：
+   - 公网 IP：NAT 环境选手动输入，填 NAT 网关/宿主公网 IP
+   - mask-host：推荐 `www.google.com`（必须能访问）
+   - secret 数量：1-9 个（分发给不同人）
+   - 端口：填**对外暴露的端口**（宿主映射的那个）
+   - IPv6：NAT 环境建议 N
+
+4. **验证**：
+
+```bash
+rc-service telego status      # started
+ss -ltnp | grep telego        # 端口在监听
+```
+
+5. **测试**：把输出的 TG 链接粘贴到 Telegram
+
+### 故障排查
+
+| 症状 | 原因 | 解决 |
+|------|------|------|
+| 启动失败 `cannot init config` | 配置文件格式错误 | 检查 `/etc/telego/telego.toml` |
+| 启动失败 `unexpected argument` | 服务文件缺 `-c` | 检查 `/etc/init.d/telego` 有 `run -c` |
+| 启动失败但日志空 | 网络问题拉证书失败 | `tail /var/log/telego.err` |
+| TG 连不上 | 端口转发没配 | 宿主加 DNAT 规则 |
+| TG 连不上 | 伪装域名被墙 | 换 mask-host 重启 |
+| 下载 404 | 版本号错 | 去 releases 页确认 asset 名 |
+
+---
+
 ## 🌐 特殊环境说明
 
 ### NAT / LXC 容器（家庭宽公网、机房内网穿透、frp/Cloudflare Tunnel 后）
