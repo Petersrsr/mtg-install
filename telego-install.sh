@@ -762,6 +762,7 @@ cat <<EOF
     服务:    /etc/init.d/telego
 
   📱 Telegram 代理链接（$N_SECRETS 个 secret × 2 模式）:
+  [重要] 请完整复制下面的链接，不要手工输入 secret！
 EOF
 
 i=1
