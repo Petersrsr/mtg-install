@@ -306,7 +306,7 @@ echo ""
 printf "    是否启用 IPv6 监听 (双栈)? [y/N]: "
 read -r v6_ans
 case "${v6_ans:-n}" in
-    [yY]|[yY][eE][sS]) BIND_IP="::";  IP_MODE="IPv4+IPv6 (双栈)" ;;
+    [yY]|[yY][eE][sS]) BIND_IP="[::]";  IP_MODE="IPv4+IPv6 (双栈)" ;;
     *)                  BIND_IP="0.0.0.0"; IP_MODE="IPv4 only" ;;
 esac
 log "监听: $BIND_IP ($IP_MODE)"
