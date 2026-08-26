@@ -92,8 +92,8 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 # 依赖安装
-log "安装依赖 (wget tar ca-certificates openssl)..."
-apk add --no-cache wget tar ca-certificates openssl >/dev/null 2>&1 || {
+log "安装依赖 (wget tar curl ca-certificates openssl)..."
+apk add --no-cache wget tar curl ca-certificates openssl >/dev/null 2>&1 || {
     err "依赖安装失败，请检查 apk 源配置"
     exit 1
 }
@@ -118,9 +118,10 @@ log "检测架构: $ARCH → mtg-$MTG_ARCH"
 # 获取 mtg 最新版本（GitHub Releases API）
 # ============================================================
 log "查询 mtg 最新版本..."
-MTG_VERSION=$(wget -qO- --timeout=10 \
+# 用 timeout 命令强制总超时（busybox wget 不认 --timeout）
+MTG_VERSION=$(timeout 10 wget -qO- \
     "https://api.github.com/repos/9seconds/mtg/releases/latest" 2>/dev/null \
-    | sed -n 's/.*"tag_name": *"v\?\([^"]*\)".*/\1/p' | head -1)
+    | sed -n 's/.*"tag_name": *"v\?\([^"]*\)".*/\1/p' | head -1 || true)
 
 if [ -z "$MTG_VERSION" ] || ! echo "$MTG_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
     warn "无法从 GitHub API 获取最新版本，使用 fallback v2.2.8"
@@ -333,15 +334,25 @@ if [ -x "$MTG_BIN" ] && "$MTG_BIN" --version 2>/dev/null | grep -q "v${MTG_VERSI
 fi
 
 if [ "$NEED_INSTALL" = "1" ]; then
-    log "下载: $DOWNLOAD_URL"
-    if ! wget -q --timeout=30 "$DOWNLOAD_URL" -O "$TMP_TARBALL" 2>/dev/null; then
-        err "下载失败！可能版本 $MTG_VERSION 不存在 $MTG_ARCH 架构"
-        err "请去 https://github.com/9seconds/mtg/releases 查看可用版本"
+    log "下载 mtg 二进制（v$MTG_VERSION, $MTG_ARCH, 约 5-7MB）"
+    log "URL: $DOWNLOAD_URL"
+    log "NAT 网络下载可能较慢，最多 120s 超时，请耐心等待..."
+    # 用 curl 下载（比 busybox wget 进度条更靠谱）
+    # -f: 失败不输出 body  -L: 跟随重定向  -s: 静默（手动显示进度）
+    # --connect-timeout: TCP 连接超时  --max-time: 总超时
+    if ! timeout 120 curl -fL \
+        --connect-timeout 10 --max-time 120 \
+        -o "$TMP_TARBALL" \
+        -w "    下载完成：%{speed_download} B/s, %{size_download} bytes, 用时 %{time_total}s\n" \
+        "$DOWNLOAD_URL" 2>&1; then
+        err "下载失败（120s 超时或网络错误）"
+        err "请手动验证下载: curl -L $DOWNLOAD_URL"
+        err "查看版本: https://github.com/9seconds/mtg/releases"
         exit 1
     fi
 
     # SHA256 校验
-    EXPECTED_SHA=$(wget -qO- --timeout=10 "$SHA256_URL" 2>/dev/null | awk '{print $1}' | head -1)
+    EXPECTED_SHA=$(timeout 10 wget -qO- "$SHA256_URL" 2>/dev/null | awk '{print $1}' | head -1 || true)
     if [ -n "$EXPECTED_SHA" ]; then
         ACTUAL_SHA=$(sha256sum "$TMP_TARBALL" | awk '{print $1}')
         if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
