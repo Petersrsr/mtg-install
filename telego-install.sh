@@ -591,7 +591,7 @@ cat > /etc/init.d/telego <<'EOF'
 name="telego"
 description="telEgo - MTProxy with TLS Fronting (https://github.com/Scratch-net/telego)"
 command="/usr/local/bin/telego"
-command_args="run /etc/telego/telego.toml"
+command_args="run -c /etc/telego/telego.toml"
 command_background="yes"
 pidfile="/run/telego.pid"
 
